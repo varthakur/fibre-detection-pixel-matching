@@ -1,0 +1,142 @@
+import os
+import cv2
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense
+from tensorflow.keras.utils import to_categorical
+from sklearn.model_selection import train_test_split
+from google.colab.patches import cv2_imshow
+
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive', force_remount=True)
+
+# Function to focus on the fabric in a given image
+def focus_on_fabric(image_path):
+    frame = cv2.imread(image_path)
+
+    if frame is None:
+        print("Failed to read image.")
+        return None
+
+    # Convert to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    cv2.imwrite("gray_image.jpg", gray)  # Debugging: Save the grayscale image
+    cv2_imshow(gray)  # Display the grayscale image
+
+    # Use GaussianBlur to reduce noise and improve edge detection
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    cv2.imwrite("blurred_image.jpg", blurred)  # Debugging: Save the blurred image
+    cv2_imshow(blurred)  # Display the blurred image
+
+    # Edge detection
+    edged = cv2.Canny(blurred, 50, 150)
+    cv2.imwrite("edged_image.jpg", edged)  # Debugging: Save the edged image
+    cv2_imshow(edged)  # Display the edged image
+
+    # Find contours
+    contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("No contours found")
+        return None
+
+    # Assume the largest contour is the fabric piece
+    largest_contour = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(largest_contour)
+    fabric = frame[y:y+h, x:x+w]
+    cv2.imwrite("focused_fabric.jpg", fabric)  # Save the focused fabric image
+    cv2_imshow(fabric)  # Display the focused fabric image
+    return fabric
+
+# Preprocess image
+def preprocess_image(image):
+    resized_image = cv2.resize(image, (128, 128))
+    gray_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
+    normalized_image = gray_image / 255.0
+    reshaped_image = normalized_image.reshape(128, 128, 1)
+    return reshaped_image
+
+# Load and preprocess dataset
+def load_dataset(dataset_path):
+    images = []
+    labels = []
+    for label in ['defect_free', 'stain']:
+        class_dir = os.path.join(dataset_path, label)
+        if not os.path.exists(class_dir):
+            print(f"Directory not found: {class_dir}")
+            continue
+        for file in os.listdir(class_dir):
+            file_path = os.path.join(class_dir, file)
+            if file.endswith('.jpg') or file.endswith('.png'):
+                image = cv2.imread(file_path)
+                if image is not None:
+                    preprocessed_image = preprocess_image(image)
+                    images.append(preprocessed_image)
+                    labels.append(0 if label == 'defect_free' else 1)
+                else:
+                    print(f"Failed to read image: {file_path}")
+            else:
+                print(f"Skipping non-image file: {file}")
+    images = np.array(images)
+    labels = np.array(labels)
+    labels = to_categorical(labels, num_classes=2)
+    print(f"Loaded {len(images)} images from dataset")
+    return train_test_split(images, labels, test_size=0.2, random_state=42)
+
+# Create CNN model
+def create_cnn_model():
+    model = Sequential([
+        Conv2D(32, (3, 3), activation='relu', input_shape=(128, 128, 1)),
+        MaxPooling2D((2, 2)),
+        Conv2D(64, (3, 3), activation='relu'),
+        MaxPooling2D((2, 2)),
+        Conv2D(128, (3, 3), activation='relu'),
+        MaxPooling2D((2, 2)),
+        Flatten(),
+        Dense(128, activation='relu'),
+        Dense(2, activation='softmax')  # Multi-class classification (2 classes: defect_free, stain)
+    ])
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
+
+# Predict defect
+def predict_defect(model, image):
+    image = image.reshape(1, 128, 128, 1)
+    prediction = model.predict(image)
+    return prediction
+
+# Main workflow
+def main():
+    # Specify the path to your dataset in Google Drive
+    dataset_path = '/content/drive/MyDrive/capstone_project/images'
+
+    # Load dataset
+    train_images, test_images, train_labels, test_labels = load_dataset(dataset_path)
+
+    if len(train_images) == 0:
+        print("No images loaded, please check the dataset.")
+        return
+
+    # Create and train CNN model
+    model = create_cnn_model()
+    model.fit(train_images, train_labels, epochs=10, validation_data=(test_images, test_labels))
+
+    # Save model weights
+    model.save_weights('fabric_detection_model.h5')
+
+    # Example: Load your pre-trained model weights if you have them
+    # model.load_weights('fabric_detection_model.h5')
+
+    # Provide the path to the input image
+    image_path = '/content/8.jpg'  # Change this path to your input image
+
+    focused_fabric = focus_on_fabric(image_path)
+    if focused_fabric is not None:
+        preprocessed_fabric = preprocess_image(focused_fabric)
+        prediction = predict_defect(model, preprocessed_fabric)
+        result = 'Defect-free' if np.argmax(prediction) == 0 else 'Stain'
+        print(f"The fabric is: {result}")
+
+if __name__ == "__main__":
+    main()
